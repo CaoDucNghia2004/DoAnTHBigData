@@ -1,0 +1,121 @@
+version: "3.8"
+
+services:
+    spark-master:
+        build:
+            context: .
+            dockerfile: Dockerfile.spark-pytorch
+        container_name: spark-master
+        volumes:
+            # Mount mã nguồn job PySpark từ host vào container để spark-submit chạy được
+            - ../spark-jobs:/opt/spark/work-dir/spark-jobs
+        ports:
+            - "8080:8080"
+            - "7077:7077"
+        environment:
+            - SPARK_HOME=/opt/spark
+            - PYSPARK_PYTHON=python3
+            - PYSPARK_DRIVER_PYTHON=python3
+        command:
+            [
+                "/opt/spark/bin/spark-class",
+                "org.apache.spark.deploy.master.Master",
+                "--host",
+                "spark-master",
+                "--port",
+                "7077",
+                "--webui-port",
+                "8080",
+            ]
+        networks:
+            - bigdata_network
+
+    spark-worker:
+        build:
+            context: .
+            dockerfile: Dockerfile.spark-pytorch
+        container_name: spark-worker
+        depends_on:
+            - spark-master
+        ports:
+            - "8081:8081"
+        volumes:
+            # Worker cũng cần truy cập được mã nguồn để UDF / dependencies load
+            - ../spark-jobs:/opt/spark/work-dir/spark-jobs
+        environment:
+            - SPARK_HOME=/opt/spark
+            - PYSPARK_PYTHON=python3
+            - PYSPARK_DRIVER_PYTHON=python3
+        command:
+            [
+                "/opt/spark/bin/spark-class",
+                "org.apache.spark.deploy.worker.Worker",
+                "spark://spark-master:7077",
+                "--port",
+                "7078",
+                "--webui-port",
+                "8081",
+            ]
+        networks:
+            - bigdata_network
+
+    namenode:
+        image: bde2020/hadoop-namenode:2.0.0-hadoop3.2.1-java8
+        container_name: namenode
+        ports:
+            - "9870:9870"
+        volumes:
+            - hadoop_namenode:/hadoop/dfs/name
+            - ../data:/data
+        environment:
+            - CLUSTER_NAME=test
+            - CORE_CONF_fs_defaultFS=hdfs://namenode:8020
+        networks:
+            - bigdata_network
+
+    datanode:
+        image: bde2020/hadoop-datanode:2.0.0-hadoop3.2.1-java8
+        container_name: datanode
+        depends_on:
+            - namenode
+        volumes:
+            - hadoop_datanode:/hadoop/dfs/data
+        environment:
+            - SERVICE_PRECONDITION=namenode:9870
+            - CORE_CONF_fs_defaultFS=hdfs://namenode:8020
+        networks:
+            - bigdata_network
+
+    # Spark History Server de xem lai job, stage, task (WebUI se map ra host port 18080)
+    spark-history-server:
+        build:
+            context: .
+            dockerfile: Dockerfile.spark-pytorch
+        container_name: spark-history-server
+        depends_on:
+            - spark-master
+        ports:
+            - "18080:18081" # container 18081 -> host 18080
+        volumes:
+            # Không bắt buộc nhưng mount để có thể truy cập cùng mã nguồn / logging nếu cần
+            - ../spark-jobs:/opt/spark/work-dir/spark-jobs
+        environment:
+            - SPARK_HOME=/opt/spark
+            - SPARK_HISTORY_OPTS=-Dspark.history.fs.logDirectory=hdfs://namenode:8020/spark-logs -Dspark.history.fs.updateInterval=10s -Dspark.history.ui.port=18081
+        command:
+            [
+                "/opt/spark/bin/spark-class",
+                "org.apache.spark.deploy.history.HistoryServer",
+            ]
+        networks:
+            - bigdata_network
+
+networks:
+    bigdata_network:
+        driver: bridge
+        # custom name without '_' so Hadoop canonical hostnames stay URI-valid
+        name: spark-hadoop-bigdata-network
+
+volumes:
+    hadoop_namenode:
+    hadoop_datanode:

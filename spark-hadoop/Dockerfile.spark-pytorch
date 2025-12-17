@@ -1,0 +1,23 @@
+FROM apache/spark:3.3.3-scala2.12-java11-python3-ubuntu
+
+# Use root while installing Python packages to avoid permission issues
+USER root
+
+# Install PyTorch CPU, torchvision and Pillow for feature extraction in Spark UDFs
+RUN python3 -m pip install --no-cache-dir --upgrade pip \
+    && python3 -m pip install --no-cache-dir torch torchvision pillow \
+       --index-url https://download.pytorch.org/whl/cpu
+
+# Prepare home directory for the "spark" user so that PyTorch can cache
+# pretrained ImageNet weights under ~/.cache/torch without permission errors.
+RUN mkdir -p /home/spark \
+    && chown -R spark:spark /home/spark
+
+# Switch back to the spark user for running Spark daemons
+USER spark
+
+# Ensure PySpark uses Python 3 inside executors and driver
+ENV SPARK_HOME=/opt/spark \
+    PYSPARK_PYTHON=python3 \
+    PYSPARK_DRIVER_PYTHON=python3
+

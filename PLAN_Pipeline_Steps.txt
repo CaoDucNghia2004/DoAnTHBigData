@@ -1,0 +1,57 @@
+Kế hoạch từng bước xây dựng pipeline Big Data phân tán "The Deepfake Hunter" (CIFAKE)
+
+BƯỚC 1 – Thiết lập cụm Hadoop + Spark và kiểm tra HDFS
+- Khởi động cluster local (Docker Compose) với các service: HDFS (NameNode/DataNode), Spark Master, Spark Workers, Spark History Server.
+- Kiểm tra HDFS hoạt động: tạo thư mục test, liệt kê, đọc/ghi thử file.
+- Đảm bảo Spark dùng đúng địa chỉ HDFS (fs.defaultFS) và kết nối tốt tới HDFS.
+
+BƯỚC 2 – Chuẩn bị dataset CIFAKE ở máy local
+- Kiểm tra/chuẩn bị thư mục dataset CIFAKE trên máy (vd: data/CIFAKE/real, data/CIFAKE/fake).
+- Xác nhận cấu trúc thư mục, số lượng ảnh, kích thước file (để khi upload lên HDFS không bị nhầm đường dẫn).
+
+BƯỚC 3 – Đưa dataset CIFAKE vào container và upload lên HDFS (Ingestion)
+- Dùng docker cp hoặc volumes để đưa thư mục CIFAKE từ Windows vào container (namenode hoặc spark-master).
+- Trên container, tạo thư mục trên HDFS (vd: /datasets/cifake/real, /datasets/cifake/fake).
+- Upload toàn bộ ảnh CIFAKE từ filesystem trong container lên HDFS bằng hdfs dfs -put.
+- Kiểm tra lại cấu trúc và số lượng file trên HDFS bằng hdfs dfs -ls -R.
+
+BƯỚC 4 – Cấu hình Spark History Server và event logs trên HDFS
+- Tạo thư mục log trên HDFS (vd: /spark-logs).
+- Cấu hình Spark: spark.eventLog.enabled=true, spark.eventLog.dir=hdfs:///spark-logs, spark.history.fs.logDirectory=hdfs:///spark-logs.
+- Khởi động Spark History Server và xác nhận truy cập được WebUI trên port 18080.
+
+BƯỚC 5 – Xây dựng job ETL đọc ảnh từ HDFS (PySpark)
+- Viết script/notebook PySpark để tạo SparkSession trỏ đúng HDFS và bật event log.
+- Dùng spark.read.format("image").load("hdfs:///datasets/cifake/...") để đọc ảnh (không dùng os.listdir + for).
+- Từ cột image.origin, sinh cột label (real/fake, sau đó chuẩn hoá về 0/1).
+- Làm sạch dữ liệu: loại file hỏng, chuẩn hoá schema.
+- Ghi DataFrame đã ETL ra HDFS dạng Parquet (vd: hdfs:///processed/cifake_clean).
+
+BƯỚC 6 – Trích xuất đặc trưng bằng model pretrained ImageNet (PyTorch trong Spark)
+- Đảm bảo các container Spark cài đủ PyTorch/torchvision.
+- Viết UDF hoặc Pandas UDF để:
+  + Nhận dữ liệu ảnh từ cột image.
+  + Tiền xử lý (resize, normalize theo chuẩn ImageNet).
+  + Cho ảnh đi qua model pretrained (ResNet50 hoặc MobileNetV2) ở chế độ eval.
+  + Trả về vector đặc trưng (mảng float).
+- Đảm bảo model được load trên Spark workers (biến global + lazy init trong UDF) để thoả điều kiện AI phân tán.
+- Thêm cột features_array (array<float>) và chuyển sang kiểu Vector của pyspark.ml.linalg.
+- Ghi DataFrame chứa features ra HDFS dạng Parquet (vd: hdfs:///processed/cifake_features).
+
+BƯỚC 7 – Huấn luyện và đánh giá bộ phân loại với Spark MLlib
+- Đọc lại DataFrame features từ HDFS nếu tách bước.
+- Chia dữ liệu train/test bằng randomSplit (vd: 80%/20%).
+- Định nghĩa và train model phân loại (LogisticRegression hoặc RandomForestClassifier) với featuresCol="features", labelCol="label".
+- Dự đoán trên tập test, tính các chỉ số Accuracy, Precision, Recall (MulticlassClassificationEvaluator hoặc confusion matrix).
+- Ghi predictions và (tuỳ chọn) metrics ra HDFS dạng Parquet (vd: hdfs:///results/cifake_predictions).
+
+BƯỚC 8 – Thu thập log, screenshot từ Spark History Server
+- Sau khi chạy các job lớn (ETL, feature extraction, training), mở Spark History Server (port 18080).
+- Chụp màn hình danh sách ứng dụng, stages/tasks thể hiện việc thực thi song song.
+- Ghi chú lại ID ứng dụng, thời gian chạy, số executors, số tasks.
+
+BƯỚC 9 – Viết tài liệu README chi tiết và file log lệnh
+- README 1 (kiến trúc/pipeline): mô tả lại từng bước đã triển khai (Bước 1 → Bước 8), giải thích dữ liệu, pipeline, model, kết quả, Business Insight.
+- README 2 (runbook/lịch sử lệnh): liệt kê theo thứ tự từng nhóm lệnh đã chạy (tiêu đề, mục đích, câu lệnh cụ thể, kết quả/mô tả ngắn).
+- Cập nhật các file này song song với quá trình triển khai để đảm bảo bám sát thực tế thực thi.
+
